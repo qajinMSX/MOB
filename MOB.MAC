@@ -1,0 +1,538 @@
+;-------------------------
+; 見ながらお絵描きBASIC
+; MOB
+;  v0.003	2021/03/10
+;-------------------------
+
+	.z80
+
+	INCLUDE BLD_ADR
+	INCLUDE BSV_HDR
+
+
+;--- ラベル定義 ---
+
+; BIOS
+
+CALBAS	equ	00159h			; BASIC inter slot call
+GETBYT	equ	0521Ch			; BASIC 1バイト値読み込み
+
+CALLB	MACRO	adr
+	LD	IX, adr
+	CALL	CALBAS			; BIOS BASIC inter-slot call
+ENDM
+
+SYNCHR	MACRO	prm
+	RST	08h					; BIOS SYNCHR
+	DB	prm
+ENDM
+
+CHRGTR	MACRO
+	RST	10h					; BIOS CHRGTR
+ENDM
+
+FILVRM	equ	00056h			; VRAM FILL
+BIGFIL	equ	0016Bh			; VRAM FILL(MSX2)
+LDIRVM	equ	0005Ch			; RAM -> VRAM
+SETWRT	equ	00053h			; VRAM Write
+
+; システムワーク
+
+SCRMOD	equ	0FCAFh			; 現在の画面モード
+OLDSCR	equ	0FCB0h			; 保存された画面モード
+
+NAMBAS	equ	0F922h			; 現在のネームテーブルの番地
+CGPBAS	equ	0F924h			; 現在のPGテーブルの番地
+
+GRPCGP	equ	0F3CBh			; screen2のPGテーブルの番地
+GRPCOL	equ	0F3C9h			; screen2のカラーテーブルの番地
+GRPNAM	equ	0F3C7h			; screen2のネームテーブルの番地
+
+CRTCNT	equ	0F3B1h			; 現在の画面行数
+T32NAM	equ	0F3BDh			; screen1のネームテーブルの番地
+TXTNAM	equ	0F3B3h			; screen0のネームテーブルの番地
+
+LINL40	equ	0F3AEh			; screen0の時の桁数
+LINL32	equ	0F3AFh			; screen1の時の桁数
+LINLEN	equ	0F3B0h			; 現在の画面の桁数
+
+FORCLR	equ	0F3E9h			; 前景色
+BAKCLR	equ	0F3EAh			; 背景色
+ATRBYT	equ	0F3F2h			; 前回使用の色
+
+; フック
+
+H_TOTE	equ	0FDBDh			; 画面をTXTにするフック
+H_CMD	equ	0FE0Dh			; CMDコマンドフック
+
+
+; 定数
+
+SC2PTNSZ	equ	0800h		; screen2 PGテーブル 1領域サイズ
+SC2COLSZ	equ	0800h		; screen2 カラーテーブル 1領域サイズ
+SC2NAMSZ	equ	0100h		; screen2 ネームテーブル 1領域サイズ
+MAXROWS		equ	24			; 最大表示行数
+ROMFONTAD	equ	0004h		; ROM Fontアドレス
+VDPWPORT	equ	0006h		; VDP書込みポート
+FNTSZ		equ	8			; 1文字のフォントのサイズ
+SC0WIDTH	equ	40			; screen0 の最大WIDTH
+SC1WIDTH	equ	32			; screen1 の最大WIDTH
+
+; BASIC中間コード
+
+CMD		equ	0D7h
+SCREEN	equ	0C5h
+COLOR	equ	0BDh
+FN		equ	0DEh
+OFF		equ	0EBh
+MAX		equ	0CDh
+LINE	equ	0AFh
+DRAW	equ	0BEh
+FIELD	equ	0B1h
+CLS		equ	09Fh
+
+; ---常駐処理---
+
+.phase BLD_ADR
+
+start_adr:
+entry_adr:
+install:
+
+	; 二重inst防止(暫定)
+	LD	B, 5
+	LD	DE, h_intp_cmd
+	LD	HL, H_CMD
+
+ chk_loop:
+	LD	A,(DE)
+	CP	(HL)
+	INC	DE
+	INC	HL
+	JR	NZ, chk_ok
+	DJNZ	chk_loop
+
+ chk_ng:
+	; msg
+	RET
+
+ chk_ok:
+
+	; 本体移動処理(予定)
+	; main_body
+
+	DI
+
+	; フック保存
+	LD	BC, 5
+	LD	DE, sv_H_TOTE
+	LD	HL, H_TOTE					; 強制TXT
+	LDIR
+
+	LD	C, 5						; Bは0になっている筈
+	LD	HL, H_CMD					; CMD文
+	LDIR
+
+	; フック設定
+	EX	DE, HL						; 設定フックは保存エリアの後に配置
+	LD	C, 5
+	LD	DE, H_TOTE					; 強制TXT
+	LDIR
+
+	LD	C, 5
+	LD	DE, H_CMD					; CMD文
+	LDIR
+
+	EI
+
+	RET
+
+main_body:
+
+.dephase
+
+;--- 本体 ---
+
+.phase	main_body
+
+;--- ジャンプテーブル ---
+jmptbl:
+
+uninstall:
+	JP	m_uninstall			; 常駐解除
+set_screen:
+	JP	m_screen			; 画面モード変更
+set_font:
+	JP	m_font				; font設定
+set_color:
+	JP	m_color				; 色設定
+set_rows:
+	JP	m_rows				; 行数設定
+set_row_ofs:
+	JP	m_row_ofs			; 行オフセット設定
+set_pattern:
+	JP	m_pattern			; ネームテーブル設定
+cls_pattern:
+	JP	m_cls_ptn			; PGテーブル初期化
+
+	RET						; 予備
+	RET
+	RET
+
+;--- 実行部 ---
+
+m_uninstall:
+
+	; 解除前に表示行数戻し
+	LD	A, MAXROWS
+	CALL	set_rows
+	XOR	A					; LD A, 0
+	CALL	set_row_ofs
+
+	; フック復帰
+	DI
+
+	; フック設定
+	LD	BC, 5
+	LD	DE, H_TOTE
+	LD	HL, sv_H_TOTE		; 強制TXT
+	LDIR
+
+	LD	C, 5
+	LD	DE, H_CMD			; CMD文
+	LDIR
+
+	EI
+
+	; msg
+
+	RET
+
+m_screen:
+	LD	(SCRMOD), A
+	CP 2
+	RET	NC
+	LD	(OLDSCR), A			; テキストの時は復帰画面にも設定
+	LD	DE, LINL40
+	ADD	A, E
+	LD	E, A
+	LD	A, (DE)
+	LD	(LINLEN), A			; 現在行数を指定画面行数に復帰 
+	RET
+
+m_font:
+	LD	HL, (GRPCGP)
+	LD	BC, SC2PTNSZ
+	CALL	s_adrcal
+	EX	DE, HL
+	LD	HL, (ROMFONTAD)
+	PUSH	BC
+	PUSH	DE
+	CALL	LDIRVM
+
+	POP	HL					; カーソルフォント設定
+	POP	BC
+	ADD	HL, BC
+	LD	BC, FNTSZ
+	XOR	A					; CY <-0
+	SBC	HL, BC
+	CPL						; A <- 0FFh
+ s_fil:
+	CALL	FILVRM
+	
+	RET
+
+m_color:
+	LD	HL, (GRPCOL)
+	LD	BC, SC2COLSZ
+	CALL	s_adrcal
+	JR	s_fil				; サイズ縮小の為横着
+
+m_cls_ptn:
+	LD	HL, (GRPCGP)
+	LD	BC, SC2PTNSZ
+	CALL	s_adrcal
+	XOR	A
+	JR	s_fil				; サイズ縮小の為横着
+
+m_rows:
+	LD	(CRTCNT),A
+	RET
+
+m_row_ofs:
+	LD	E, A
+	LD	A, (SCRMOD)
+	AND	A
+	JR	Z, b_ofs_sc0
+	LD	HL, (T32NAM)
+	LD	BC, SC1WIDTH
+	JR	b_ofs_exe
+ b_ofs_sc0:
+	LD	HL, (TXTNAM)
+	LD	BC, SC0WIDTH
+ b_ofs_exe:
+	CALL	s_adrcal
+	LD	(NAMBAS), HL
+	RET
+
+m_pattern:
+	LD	HL, (GRPNAM)
+	LD	BC, SC2NAMSZ
+	CALL	s_adrcal
+	CALL	SETWRT
+	LD	A, (VDPWPORT)
+	LD	C, A
+	XOR A
+ l_pattern:
+	OUT	(C),A
+	INC	A
+	JR	NZ, l_pattern
+	RET
+
+s_adrcal:					; HL += BC*E
+	INC	E
+ l_adrcal:
+	DEC E
+	RET	Z
+	ADD	HL, BC
+	JR	l_adrcal
+
+
+;--- BASIC命令解釈部 ---
+
+chk_syntax:
+
+	INC	HL
+
+	CP	OFF					; CMD OFF
+	JR	Z, intp_off
+
+	CP	SCREEN				; CMD SCREEN
+	JP	Z, intp_screen
+
+	CP	COLOR				; CMD COLOR
+	JP	Z, intp_color
+
+	CP	FN					; CMD FNT
+	JP	Z, intp_font
+
+	CP	MAX					; CMD MAX LINE
+	JP	Z, intp_rows
+
+	CP	DRAW
+	JP	Z, intp_grp			; CMD DRAW FIELD
+
+	CP	CLS
+	JP	Z, intp_cls			; CMD CLS
+
+	DEC	HL
+	JP	sv_H_CMD			; HOOK chain
+
+; パラメタ判定
+
+intp_off:
+	PUSH	HL
+	CALL	uninstall
+	POP		HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+intp_screen:
+	CALLB	GETBYT
+	CP	04h
+	RET	NC					; 0~3 以外
+	POP	AF					; エラー処理ルーチン捨て
+	LD	A, E
+	JP	set_screen
+
+intp_color:
+	CALLB	GETBYT			; 第1引数(領域指定)
+	CP	03h
+	RET	NC					; 0~2 以外
+	PUSH	AF				; 保存
+
+	LD	DE, (FORCLR)		; 前景色/背景色 default
+	PUSH	DE
+
+	DEC	HL
+	CHRGTR
+	JR	Z, col_exe			; 行末(第1のみ) →
+
+	SYNCHR	','				; ≠',' →SyntaxErr
+	CP	','					; 第2引数省略(第3前の',')
+	JR	Z, col_prm3
+	CALLB	GETBYT			; 第2引数(前景色)読み込み
+	CP	10h
+	JR	NC, col_err			; 0~15 以外
+	POP	DE
+	LD	E, A
+	PUSH	DE				; 第2引数格納
+
+	DEC	HL
+	CHRGTR
+	JR	Z, col_exe			; 行末(第3なし) →
+ col_prm3:
+	SYNCHR	','				; ','じゃない →SyntaxErr
+	CALLB	GETBYT			; 第3引数(背景色)
+	CP	10h
+	JR	NC, col_err			; 0~15 以外
+	POP	DE
+	LD	D, A
+	PUSH	DE				; 第3引数格納
+
+ col_exe:
+	POP	DE
+	LD	A, E				; 前景色
+	AND	0Fh
+	RLCA
+	RLCA
+	RLCA
+	RLCA
+	LD	E, A
+	LD	A, D				; 背景色
+	AND	0FH
+	OR	E
+
+	POP	DE					; 領域
+	LD	E, D
+
+	PUSH	HL
+	CALL	set_color
+	POP	HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+ col_err:
+	POP	DE					; 積んだ作業値捨て
+	POP AF
+	RET
+
+intp_font:
+	SYNCHR	'T'				; "FNT"
+
+	CALLB	GETBYT
+	CP	03h
+	RET	NC					; 0~2 以外
+	PUSH	HL
+	CALL	set_font
+	POP	HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+intp_rows:
+	DEC	HL
+	CHRGTR					; 次のTOKENまで読み飛ばし
+	SYNCHR	LINE			; "MAX LINE"
+
+	LD	BC, MAXROWS			; default
+	JR	Z, row_exe			; (行末)パラメタなし →
+
+	CP	','
+	LD	A, (CRTCNT)
+	LD	C, A				; 現在値
+	JR	Z, row_prm2			; (第1省略の)','
+
+	CALLB	GETBYT			; 第1引数読み込み
+	OR	A
+	RET	Z					; 0
+	CP	MAXROWS+1
+	RET	NC					; >24
+	LD	C, A				; 保存
+
+	DEC	HL
+	CHRGTR
+	JR	Z, row_exe			; 行末(第2なし) →
+	
+ row_prm2:
+	SYNCHR	','
+	CALLB	GETBYT			; 第2引数読み込み
+	ADD	A, C
+	CP	MAXROWS+1
+	RET	NC					; 合計>最大
+	LD	B, E
+
+ row_exe:
+	LD	A, C
+	CALL	set_rows
+
+	LD	A, B
+	PUSH	HL
+	CALL	set_row_ofs
+	POP	HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+intp_grp:
+	DEC	HL
+	CHRGTR					; 次のTOKENまで読み飛ばし
+	SYNCHR	FIELD			; "DRAW FIELD"
+
+	CALLB	GETBYT
+	CP	03h
+	RET	NC					; 0~2 以外
+	PUSH	HL
+	CALL	set_pattern
+	POP	HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+intp_cls:
+	CALLB	GETBYT
+	CP	03h
+	RET	NC					; 0~2 以外
+	PUSH	HL
+	CALL	cls_pattern
+	POP	HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+
+
+;--- フック処理 ---
+
+disable_force_back:
+	EX	(SP),HL
+	POP	HL					; 画面初期化のアドレスを捨てる
+	CALL set_screen			; Aに旧screenモードが入っている
+	JP	sv_H_TOTE
+
+
+; フック保存エリア
+
+sv_H_TOTE:
+	RET
+	RET
+	RET
+	RET
+	RET
+
+sv_H_CMD:
+	RET
+	RET
+	RET
+	RET
+	RET
+
+; 設定するフック 
+
+h_di_fback:
+	JP	disable_force_back
+	RET
+	RET
+
+h_intp_cmd:
+	JP	chk_syntax
+	RET
+	RET
+
+
+end_adr:
+
+.dephase
+
+end

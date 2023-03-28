@@ -1,0 +1,8 @@
+	aseg
+	org	0100h			; M80で警告が出るのでこの値
+
+;--- BSAVE ヘッダ ---
+	DB	0FEh
+	DW	start_adr
+	DW	end_adr
+	DW	entry_adr
