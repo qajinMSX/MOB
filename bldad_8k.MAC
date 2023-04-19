@@ -1,4 +1,4 @@
 
 ;--- BLOAD ADRESS éwé¶ ---
-BLD_ADR	equ	0F160h
+BLD_ADR	equ	0F120h
 

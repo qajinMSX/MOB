@@ -1,7 +1,7 @@
 ;-------------------------
 ; 見ながらお絵描きBASIC
 ; MOB
-;  v0.003	2021/03/10
+;  v0.004	2023/04/19
 ;-------------------------
 
 	.z80
@@ -35,6 +35,7 @@ FILVRM	equ	00056h			; VRAM FILL
 BIGFIL	equ	0016Bh			; VRAM FILL(MSX2)
 LDIRVM	equ	0005Ch			; RAM -> VRAM
 SETWRT	equ	00053h			; VRAM Write
+CHPUT	equ	000A2h			; 1文字表示
 
 ; システムワーク
 
@@ -90,12 +91,16 @@ LINE	equ	0AFh
 DRAW	equ	0BEh
 FIELD	equ	0B1h
 CLS		equ	09Fh
+KILL	equ	0D4h
 
 ; ---常駐処理---
 
 .phase BLD_ADR
 
 start_adr:
+main_ptr:
+	DW	main_body
+
 entry_adr:
 install:
 
@@ -114,6 +119,13 @@ install:
 
  chk_ng:
 	; msg
+	LD	HL, err_msg
+	LD	B, 20		; 文字数
+ prt_ng:
+	LD	A,(HL)
+	CALL	CHPUT
+	INC	HL
+	DJNZ	prt_ng
 	RET
 
  chk_ok:
@@ -134,7 +146,8 @@ install:
 	LDIR
 
 	; フック設定
-	EX	DE, HL						; 設定フックは保存エリアの後に配置
+;;	EX	DE, HL						; ^h設定フックは保存エリアの後に配置
+	LD	HL, h_di_fback				; (設定フックはinstall処理内へ移動
 	LD	C, 5
 	LD	DE, H_TOTE					; 強制TXT
 	LDIR
@@ -147,6 +160,22 @@ install:
 
 	RET
 
+ err_msg:
+	DB	"Already Installed.",0Dh,0Ah,00h
+
+; 設定するフック 
+
+h_di_fback:
+	JP	disable_force_back
+	RET
+	RET
+
+h_intp_cmd:
+	JP	chk_syntax
+	RET
+	RET
+
+
 main_body:
 
 .dephase
@@ -155,148 +184,8 @@ main_body:
 
 .phase	main_body
 
-;--- ジャンプテーブル ---
-jmptbl:
-
-uninstall:
-	JP	m_uninstall			; 常駐解除
-set_screen:
-	JP	m_screen			; 画面モード変更
-set_font:
-	JP	m_font				; font設定
-set_color:
-	JP	m_color				; 色設定
-set_rows:
-	JP	m_rows				; 行数設定
-set_row_ofs:
-	JP	m_row_ofs			; 行オフセット設定
-set_pattern:
-	JP	m_pattern			; ネームテーブル設定
-cls_pattern:
-	JP	m_cls_ptn			; PGテーブル初期化
-
-	RET						; 予備
-	RET
-	RET
-
-;--- 実行部 ---
-
-m_uninstall:
-
-	; 解除前に表示行数戻し
-	LD	A, MAXROWS
-	CALL	set_rows
-	XOR	A					; LD A, 0
-	CALL	set_row_ofs
-
-	; フック復帰
-	DI
-
-	; フック設定
-	LD	BC, 5
-	LD	DE, H_TOTE
-	LD	HL, sv_H_TOTE		; 強制TXT
-	LDIR
-
-	LD	C, 5
-	LD	DE, H_CMD			; CMD文
-	LDIR
-
-	EI
-
-	; msg
-
-	RET
-
-m_screen:
-	LD	(SCRMOD), A
-	CP 2
-	RET	NC
-	LD	(OLDSCR), A			; テキストの時は復帰画面にも設定
-	LD	DE, LINL40
-	ADD	A, E
-	LD	E, A
-	LD	A, (DE)
-	LD	(LINLEN), A			; 現在行数を指定画面行数に復帰 
-	RET
-
-m_font:
-	LD	HL, (GRPCGP)
-	LD	BC, SC2PTNSZ
-	CALL	s_adrcal
-	EX	DE, HL
-	LD	HL, (ROMFONTAD)
-	PUSH	BC
-	PUSH	DE
-	CALL	LDIRVM
-
-	POP	HL					; カーソルフォント設定
-	POP	BC
-	ADD	HL, BC
-	LD	BC, FNTSZ
-	XOR	A					; CY <-0
-	SBC	HL, BC
-	CPL						; A <- 0FFh
- s_fil:
-	CALL	FILVRM
-	
-	RET
-
-m_color:
-	LD	HL, (GRPCOL)
-	LD	BC, SC2COLSZ
-	CALL	s_adrcal
-	JR	s_fil				; サイズ縮小の為横着
-
-m_cls_ptn:
-	LD	HL, (GRPCGP)
-	LD	BC, SC2PTNSZ
-	CALL	s_adrcal
-	XOR	A
-	JR	s_fil				; サイズ縮小の為横着
-
-m_rows:
-	LD	(CRTCNT),A
-	RET
-
-m_row_ofs:
-	LD	E, A
-	LD	A, (SCRMOD)
-	AND	A
-	JR	Z, b_ofs_sc0
-	LD	HL, (T32NAM)
-	LD	BC, SC1WIDTH
-	JR	b_ofs_exe
- b_ofs_sc0:
-	LD	HL, (TXTNAM)
-	LD	BC, SC0WIDTH
- b_ofs_exe:
-	CALL	s_adrcal
-	LD	(NAMBAS), HL
-	RET
-
-m_pattern:
-	LD	HL, (GRPNAM)
-	LD	BC, SC2NAMSZ
-	CALL	s_adrcal
-	CALL	SETWRT
-	LD	A, (VDPWPORT)
-	LD	C, A
-	XOR A
- l_pattern:
-	OUT	(C),A
-	INC	A
-	JR	NZ, l_pattern
-	RET
-
-s_adrcal:					; HL += BC*E
-	INC	E
- l_adrcal:
-	DEC E
-	RET	Z
-	ADD	HL, BC
-	JR	l_adrcal
-
+jptbl_ptr:
+	DW	jmptbl
 
 ;--- BASIC命令解釈部 ---
 
@@ -324,6 +213,9 @@ chk_syntax:
 
 	CP	CLS
 	JP	Z, intp_cls			; CMD CLS
+
+	CP	KILL
+	JP	Z, intp_kill		; CMD KILL
 
 	DEC	HL
 	JP	sv_H_CMD			; HOOK chain
@@ -492,6 +384,175 @@ intp_cls:
 	POP	AF					; エラー処理ルーチン捨て
 	RET
 
+intp_kill:
+	PUSH	HL
+	CALL	kill_intrprt
+	POP		HL
+
+	POP	AF					; エラー処理ルーチン捨て
+	RET
+	
+
+;--- ジャンプテーブル ---
+jmptbl:
+
+uninstall:
+	JP	m_uninstall			; 常駐解除
+set_screen:
+	JP	m_screen			; 画面モード変更
+set_font:
+	JP	m_font				; font設定
+set_color:
+	JP	m_color				; 色設定
+set_rows:
+	JP	m_rows				; 行数設定
+set_row_ofs:
+	JP	m_row_ofs			; 行オフセット設定
+set_pattern:
+	JP	m_pattern			; ネームテーブル設定
+cls_pattern:
+	JP	m_cls_ptn			; PGテーブル初期化
+kill_intrprt:
+	JP	m_kill_intr			; インタープリター切り離し
+
+	RET						; 予備
+	RET
+	RET
+
+;--- 実行部 ---
+
+m_uninstall:
+
+	; 解除前に表示行数戻し
+	LD	A, MAXROWS
+	CALL	set_rows
+	XOR	A					; LD A, 0
+	CALL	set_row_ofs
+
+	; フック復帰
+	DI
+
+	; フック設定
+	LD	BC, 5
+	LD	DE, H_TOTE
+	LD	HL, sv_H_TOTE		; 強制TXT
+	LDIR
+
+	LD	C, 5
+	LD	DE, H_CMD			; CMD文
+	LDIR
+
+	EI
+
+	; msg
+
+	RET
+
+m_screen:
+	LD	(SCRMOD), A
+	CP 2
+	RET	NC
+	LD	(OLDSCR), A			; テキストの時は復帰画面にも設定
+	LD	DE, LINL40
+	ADD	A, E
+	LD	E, A
+	LD	A, (DE)
+	LD	(LINLEN), A			; 現在行数を指定画面行数に復帰 
+	RET
+
+m_font:
+	LD	HL, (GRPCGP)
+	LD	BC, SC2PTNSZ
+	CALL	s_adrcal
+	EX	DE, HL
+	LD	HL, (ROMFONTAD)
+	PUSH	BC
+	PUSH	DE
+	CALL	LDIRVM
+
+	POP	HL					; カーソルフォント設定
+	POP	BC
+	ADD	HL, BC
+	LD	BC, FNTSZ
+	XOR	A					; CY <-0
+	SBC	HL, BC
+	CPL						; A <- 0FFh
+ s_fil:
+	CALL	FILVRM
+	
+	RET
+
+m_color:
+	LD	HL, (GRPCOL)
+	LD	BC, SC2COLSZ
+	CALL	s_adrcal
+	JR	s_fil				; サイズ縮小の為横着
+
+m_cls_ptn:
+	LD	HL, (GRPCGP)
+	LD	BC, SC2PTNSZ
+	CALL	s_adrcal
+	XOR	A
+	JR	s_fil				; サイズ縮小の為横着
+
+m_rows:
+	LD	(CRTCNT),A
+	RET
+
+m_row_ofs:
+	LD	E, A
+	LD	A, (SCRMOD)
+	AND	A
+	JR	Z, b_ofs_sc0
+	LD	HL, (T32NAM)
+	LD	BC, SC1WIDTH
+	JR	b_ofs_exe
+ b_ofs_sc0:
+	LD	HL, (TXTNAM)
+	LD	BC, SC0WIDTH
+ b_ofs_exe:
+	CALL	s_adrcal
+	LD	(NAMBAS), HL
+	RET
+
+m_pattern:
+	LD	HL, (GRPNAM)
+	LD	BC, SC2NAMSZ
+	CALL	s_adrcal
+	CALL	SETWRT
+	LD	A, (VDPWPORT)
+	LD	C, A
+	XOR A
+ l_pattern:
+	OUT	(C),A
+	INC	A
+	JR	NZ, l_pattern
+	RET
+
+s_adrcal:					; HL += BC*E
+	INC	E
+ l_adrcal:
+	DEC E
+	RET	Z
+	ADD	HL, BC
+	JR	l_adrcal
+
+m_kill_intr:
+	
+	; フック復帰
+	DI
+
+	; フック設定
+	LD	BC, 5
+	LD	DE, H_CMD			; CMD文
+	LD	HL, sv_H_CMD
+	LDIR
+
+; (後でOFFが呼ばれてもいいように保存エリアはそのまま残す)
+
+	EI
+
+	RET
 
 ;--- フック処理 ---
 
@@ -499,7 +560,7 @@ disable_force_back:
 	EX	(SP),HL
 	POP	HL					; 画面初期化のアドレスを捨てる
 	CALL set_screen			; Aに旧screenモードが入っている
-	JP	sv_H_TOTE
+;	JP	sv_H_TOTE			; そのまま保存エリアのフックへ
 
 
 ; フック保存エリア
@@ -517,19 +578,6 @@ sv_H_CMD:
 	RET
 	RET
 	RET
-
-; 設定するフック 
-
-h_di_fback:
-	JP	disable_force_back
-	RET
-	RET
-
-h_intp_cmd:
-	JP	chk_syntax
-	RET
-	RET
-
 
 end_adr:
 
