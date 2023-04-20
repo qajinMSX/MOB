@@ -38,7 +38,7 @@ DL有難う御座います。
 
 	RUN "MOB_LDR.BAS"
 
-CLEAR文でD800h以降(8k版はF160h)をマシン語領域として確保してから
+CLEAR文でD800h以降(8k版はF120h)をマシン語領域として確保してから
 本体を直接BLOADで読み込んで実行してください。
 
 	CLEAR200,&HD800:BLOAD "MOB.BIN",R
